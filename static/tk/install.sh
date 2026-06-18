@@ -1,6 +1,7 @@
 #!/bin/bash
-# TK 子台用户安装入口（仅此脚本对用户可见；部署逻辑在 installer 镜像内）
-# 与 TK_learn/user/install.sh 保持同步；总台通过 HTTPS /static/tk/install.sh 分发
+# TK 子台用户安装入口（部署逻辑在 installer 镜像内）
+# 用户获取: GitHub Dinopell/TK_INSTALL → static/tk/install.sh
+# 开发维护: 本文件；发版执行 bash ops/sync-to-tk-install.sh
 # 默认值与 springboot-app.jar 内 application.yml → ruoyi.substation 对齐：
 #   TK_DATA        ↔ deployDataDir
 #   IMAGE_REGISTRY ↔ imageRegistry
