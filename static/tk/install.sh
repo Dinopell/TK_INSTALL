@@ -77,7 +77,6 @@ if [ ! -f "${TK_DATA}/deploy.env" ]; then
 ADMIN_API_HOSTS=${_auto_ip}
 TK_SHIELD_ENABLED=1
 TK_UA_BLOCK_ENABLED=1
-DECOY_ACCESS_LOG_ENABLED=1
 EOF
         chmod 600 "${TK_DATA}/deploy.env"
         echo ">>> 已自动创建 ${TK_DATA}/deploy.env，ADMIN_API_HOSTS=${_auto_ip}"
@@ -150,7 +149,9 @@ docker run --rm \
     ${TK_SHIELD_ENABLED:+-e TK_SHIELD_ENABLED="${TK_SHIELD_ENABLED}"} \
     ${TK_UA_BLOCK_ENABLED:+-e TK_UA_BLOCK_ENABLED="${TK_UA_BLOCK_ENABLED}"} \
     ${TK_WHITELIST_REDIRECT_URL:+-e TK_WHITELIST_REDIRECT_URL="${TK_WHITELIST_REDIRECT_URL}"} \
-    ${DECOY_ACCESS_LOG_ENABLED:+-e DECOY_ACCESS_LOG_ENABLED="${DECOY_ACCESS_LOG_ENABLED}"} \
+    ${TOKEN_SECRET:+-e TOKEN_SECRET="${TOKEN_SECRET}"} \
+    ${VISIT_PASS_HMAC_SECRET:+-e VISIT_PASS_HMAC_SECRET="${VISIT_PASS_HMAC_SECRET}"} \
+    ${MYSQL_PWD:+-e MYSQL_PWD="${MYSQL_PWD}"} \
     --entrypoint /bin/bash \
     "$INSTALLER" \
     -c "sed -i 's/\r$//' /opt/tk/deploy-internal.sh 2>/dev/null || true; exec /opt/tk/deploy-internal.sh"

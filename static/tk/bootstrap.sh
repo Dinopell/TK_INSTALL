@@ -254,6 +254,10 @@ if [ ! -f "$DEPLOY_ENV" ] || [ "$REWRITE_ENV" = "1" ]; then
         if [ -z "$TOKEN_SECRET_VAL" ]; then
             TOKEN_SECRET_VAL="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
         fi
+        VISIT_PASS_VAL="${VISIT_PASS_HMAC_SECRET:-}"
+        if [ -z "$VISIT_PASS_VAL" ]; then
+            VISIT_PASS_VAL="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        fi
 
         umask 077
         cat > "$DEPLOY_ENV" <<EOF
@@ -267,6 +271,7 @@ CDN_PROVIDER=cloudflare
 IMAGE_TAG=${TAG}
 IMAGE_REGISTRY=${REGISTRY}
 TOKEN_SECRET=${TOKEN_SECRET_VAL}
+VISIT_PASS_HMAC_SECRET=${VISIT_PASS_VAL}
 EOF
         chmod 600 "$DEPLOY_ENV"
         echo ">>> 已写入 $DEPLOY_ENV"

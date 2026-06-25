@@ -145,6 +145,7 @@ tk_parse_bootstrap_secrets_pkg() {
     BOOTSTRAP_IMAGE_TAG="$(tk_json_get "$json" imageTag)"
     BOOTSTRAP_IMAGE_REGISTRY="$(tk_json_get "$json" imageRegistry)"
     BOOTSTRAP_TOKEN_SECRET="$(tk_json_get "$json" tokenSecret)"
+    BOOTSTRAP_VISIT_PASS_HMAC_SECRET="$(tk_json_get "$json" visitPassHmacSecret)"
     if [ -z "$BOOTSTRAP_CF_TOKEN" ]; then
         echo ">>> 错误: bootstrap 配置包缺少 cfToken" >&2
         return 1
@@ -242,6 +243,13 @@ tk_write_deploy_env_from_bootstrap() {
     if [ -z "$token_secret" ]; then
         token_secret="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     fi
+    local visit_pass_secret="${4:-}"
+    if [ -z "$visit_pass_secret" ]; then
+        visit_pass_secret="${BOOTSTRAP_VISIT_PASS_HMAC_SECRET:-}"
+    fi
+    if [ -z "$visit_pass_secret" ]; then
+        visit_pass_secret="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
 
     local tag="${BOOTSTRAP_IMAGE_TAG:-latest}"
     local registry="${BOOTSTRAP_IMAGE_REGISTRY:-ghcr.io/dinopell}"
@@ -260,6 +268,7 @@ CDN_PROVIDER=cloudflare
 IMAGE_TAG=${tag}
 IMAGE_REGISTRY=${registry}
 TOKEN_SECRET=${token_secret}
+VISIT_PASS_HMAC_SECRET=${visit_pass_secret}
 EOF
     chmod 600 "$deploy_env"
 }
