@@ -1,5 +1,5 @@
 #!/bin/bash
-# TK 子台用户安装入口（部署逻辑在 installer 镜像内）
+# TK用户安装入口（部署逻辑在 installer 镜像内）
 # 用户获取: GitHub Dinopell/TK_INSTALL → static/tk/install.sh
 # 开发维护: 本文件；发版执行 bash ops/sync-to-tk-install.sh
 # 默认值与 springboot-app.jar 内 application.yml → ruoyi.substation 对齐：
@@ -7,6 +7,8 @@
 #   IMAGE_REGISTRY ↔ imageRegistry
 #   IMAGE_TAG      ↔ imageTag
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
@@ -20,6 +22,12 @@ TAG="${IMAGE_TAG:-latest}"
 INSTALLER="${REGISTRY}/tk-substation-installer:${TAG}"
 INSTALL_LOG="${TK_DATA}/deploy.log"
 DEPLOY_VERBOSE="${DEPLOY_VERBOSE:-0}"
+
+if [ -f "$SCRIPT_DIR/deploy-progress.sh" ]; then
+    export DEPLOY_LOG="$INSTALL_LOG"
+    # shellcheck source=/dev/null
+    . "$SCRIPT_DIR/deploy-progress.sh"
+fi
 
 install_log() {
     mkdir -p "$TK_DATA" 2>/dev/null || true
@@ -102,7 +110,7 @@ if [ ! -f "${TK_DATA}/deploy.env" ]; then
     if _auto_ip="$(_install_detect_public_ip)"; then
         umask 077
         cat > "${TK_DATA}/deploy.env" <<EOF
-# TK 子台配置（install.sh 自动生成，$(date -Iseconds 2>/dev/null || date))
+# TK配置（install.sh 自动生成，$(date -Iseconds 2>/dev/null || date))
 ADMIN_API_HOSTS=${_auto_ip}
 TK_SHIELD_ENABLED=1
 TK_UA_BLOCK_ENABLED=1
@@ -146,7 +154,15 @@ if [ "$HOST_TOTAL_MEM_MB" -lt 512 ] 2>/dev/null; then
 fi
 
 install_msg "${YELLOW}>>> 拉取安装器镜像 ${INSTALLER}...${NC}"
-if ! docker_pull_retry "$INSTALLER"; then
+if command -v progress_init >/dev/null 2>&1; then
+    progress_init
+    if ! progress_pull_with_bar installer "$INSTALLER" "$INSTALL_LOG"; then
+        progress_fail_module installer "拉取镜像失败"
+        progress_abort "拉取安装器镜像失败: ${INSTALLER}"
+    fi
+    progress_set installer ok "已就绪" 100
+    progress_render
+elif ! docker_pull_retry "$INSTALLER"; then
     install_err "${RED}>>> 拉取安装器镜像失败: ${INSTALLER}${NC}"
     install_err "${YELLOW}>>> 详见 ${INSTALL_LOG}${NC}"
     exit 1
@@ -174,6 +190,7 @@ docker run --rm "${DOCKER_RUN_TTY[@]}" \
     ${REDIS_MAXMEMORY:+-e REDIS_MAXMEMORY="${REDIS_MAXMEMORY}"} \
     ${FIX_HOST_NGINX:+-e FIX_HOST_NGINX="${FIX_HOST_NGINX}"} \
     ${DEPLOY_VERBOSE:+-e DEPLOY_VERBOSE="${DEPLOY_VERBOSE}"} \
+    -e PROGRESS_HANDOFF=1 \
     ${SUBSTATION_SSL_CHALLENGE_TYPE:+-e SUBSTATION_SSL_CHALLENGE_TYPE="${SUBSTATION_SSL_CHALLENGE_TYPE}"} \
     ${SSL_HTTP01_ENABLED:+-e SSL_HTTP01_ENABLED="${SSL_HTTP01_ENABLED}"} \
     ${SSL_HTTP01_ENABLED_FORCE:+-e SSL_HTTP01_ENABLED_FORCE="${SSL_HTTP01_ENABLED_FORCE}"} \

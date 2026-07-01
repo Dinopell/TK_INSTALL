@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# TK 子台一键安全部署（多服务器：每台只执行一条命令）
+# TK一键安全部署（多服务器：每台只执行一条命令）
 #
 # 推荐（Token 不进命令行 / bash history）：
 #
@@ -41,7 +41,7 @@ fi
 
 usage() {
     cat <<'EOF'
-TK 子台一键部署 bootstrap.sh
+TK一键部署 bootstrap.sh
 
 推荐（Cloudflare Token 不进命令行）：
   --from-master             用 master.endpoint.pkg 向总台拉取 bootstrap.secrets.pkg
@@ -261,7 +261,7 @@ if [ ! -f "$DEPLOY_ENV" ] || [ "$REWRITE_ENV" = "1" ]; then
 
         umask 077
         cat > "$DEPLOY_ENV" <<EOF
-# TK 子台生产配置（由 bootstrap.sh 生成，$(date -Iseconds 2>/dev/null || date))
+# TK生产配置（由 bootstrap.sh 生成，$(date -Iseconds 2>/dev/null || date))
 ADMIN_API_HOSTS=${ADMIN_HOSTS}
 SUBSTATION_SSL_CHALLENGE_TYPE=dns-cloudflare
 CLOUDFLARE_API_TOKEN=${CF_TOKEN}
@@ -302,7 +302,7 @@ set -a
 set +a
 
 echo "=============================================="
-echo " TK 子台一键部署"
+echo " TK一键部署"
 echo " 数据目录: $TK_DATA"
 echo " 镜像: ${REGISTRY}/tk-substation-*:${TAG}"
 echo " 管理 API Host: ${ADMIN_API_HOSTS:-（见 deploy.env）}"

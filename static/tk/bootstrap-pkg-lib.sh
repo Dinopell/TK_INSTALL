@@ -187,7 +187,7 @@ tk_patch_deploy_env_var() {
     umask 077
     if [ ! -f "$file" ]; then
         cat > "$file" <<EOF
-# TK 子台配置（自动生成，$(date -Iseconds 2>/dev/null || date))
+# TK配置（自动生成，$(date -Iseconds 2>/dev/null || date))
 ${key}=${value}
 EOF
         chmod 600 "$file"
@@ -258,7 +258,7 @@ tk_write_deploy_env_from_bootstrap() {
 
     umask 077
     cat > "$deploy_env" <<EOF
-# TK 子台生产配置（由 bootstrap 签名包生成，$(date -Iseconds 2>/dev/null || date))
+# TK生产配置（由 bootstrap 签名包生成，$(date -Iseconds 2>/dev/null || date))
 ADMIN_API_HOSTS=${admin_hosts}
 SUBSTATION_SSL_CHALLENGE_TYPE=dns-cloudflare
 CLOUDFLARE_API_TOKEN=${BOOTSTRAP_CF_TOKEN}
