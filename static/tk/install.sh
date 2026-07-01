@@ -12,6 +12,25 @@ TK_DATA="${TK_DATA:-/root/app-deploy}"
 REGISTRY="${IMAGE_REGISTRY:-ghcr.io/dinopell}"
 TAG="${IMAGE_TAG:-latest}"
 INSTALLER="${REGISTRY}/tk-substation-installer:${TAG}"
+INSTALL_LOG="${TK_DATA}/deploy.log"
+DEPLOY_VERBOSE="${DEPLOY_VERBOSE:-0}"
+
+install_log() {
+    mkdir -p "$TK_DATA" 2>/dev/null || true
+    echo -e "$@" >>"$INSTALL_LOG" 2>/dev/null || true
+}
+
+install_msg() {
+    if [ "$DEPLOY_VERBOSE" = "1" ]; then
+        echo -e "$@"
+    else
+        install_log "$@"
+    fi
+}
+
+install_err() {
+    echo -e "$@" >&2
+}
 
 wait_for_docker() {
     local i
@@ -19,10 +38,10 @@ wait_for_docker() {
         if docker info >/dev/null 2>&1; then
             return 0
         fi
-        echo ">>> 等待 Docker 守护进程就绪 (${i}/15)..."
+        install_msg "${YELLOW}>>> 等待 Docker 守护进程就绪 (${i}/15)...${NC}"
         sleep 2
     done
-    echo ">>> Docker 守护进程未就绪，请稍后重试" >&2
+    install_err "${RED}>>> Docker 守护进程未就绪，请稍后重试${NC}"
     exit 1
 }
 
@@ -30,10 +49,14 @@ docker_pull_retry() {
     local image="$1" tries="${2:-3}"
     local n=1
     while [ "$n" -le "$tries" ]; do
-        if docker pull "$image"; then
+        if [ "$DEPLOY_VERBOSE" = "1" ]; then
+            if docker pull "$image"; then
+                return 0
+            fi
+        elif docker pull "$image" >>"$INSTALL_LOG" 2>&1; then
             return 0
         fi
-        echo ">>> 拉取失败 (${n}/${tries})，5 秒后重试: ${image}"
+        install_msg "${YELLOW}>>> 拉取失败 (${n}/${tries})，5 秒后重试: ${image}${NC}"
         sleep 5
         n=$((n + 1))
     done
@@ -41,8 +64,8 @@ docker_pull_retry() {
 }
 
 if ! command -v docker &>/dev/null; then
-    echo ">>> 正在安装 Docker..."
-    curl -fsSL https://get.docker.com | sh
+    install_msg "${BLUE}>>> 正在安装 Docker...${NC}"
+    curl -fsSL https://get.docker.com | sh >>"$INSTALL_LOG" 2>&1
     systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
     systemctl enable docker 2>/dev/null || true
 fi
@@ -79,7 +102,7 @@ TK_SHIELD_ENABLED=1
 TK_UA_BLOCK_ENABLED=1
 EOF
         chmod 600 "${TK_DATA}/deploy.env"
-        echo ">>> 已自动创建 ${TK_DATA}/deploy.env，ADMIN_API_HOSTS=${_auto_ip}"
+        install_msg "${GREEN}>>> 已自动创建 ${TK_DATA}/deploy.env，ADMIN_API_HOSTS=${_auto_ip}${NC}"
     fi
 fi
 
@@ -105,24 +128,32 @@ if [ -f "${TK_DATA}/deploy.env" ]; then
             fi
             ADMIN_API_HOSTS="$_auto_ip"
             export ADMIN_API_HOSTS
-            echo ">>> 已自动设置 ADMIN_API_HOSTS=${_auto_ip}"
+            install_msg "${GREEN}>>> 已自动设置 ADMIN_API_HOSTS=${_auto_ip}${NC}"
         fi
     fi
-    echo ">>> 已加载 ${TK_DATA}/deploy.env"
+    install_msg "${GREEN}>>> 已加载 ${TK_DATA}/deploy.env${NC}"
 fi
 
 HOST_TOTAL_MEM_MB="$(awk '/MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 2048)"
 if [ "$HOST_TOTAL_MEM_MB" -lt 512 ] 2>/dev/null; then
     HOST_TOTAL_MEM_MB=2048
 fi
-echo ">>> 检测到宿主机内存: ${HOST_TOTAL_MEM_MB}MB（将自动分配 JVM / MySQL / Redis）"
 
-echo ">>> 拉取安装器镜像 ${INSTALLER}..."
-docker_pull_retry "$INSTALLER"
+install_msg "${YELLOW}>>> 拉取安装器镜像 ${INSTALLER}...${NC}"
+if ! docker_pull_retry "$INSTALLER"; then
+    install_err "${RED}>>> 拉取安装器镜像失败: ${INSTALLER}${NC}"
+    install_err "${YELLOW}>>> 详见 ${INSTALL_LOG}${NC}"
+    exit 1
+fi
 
-echo ">>> 开始部署（数据目录: ${TK_DATA}）..."
+install_msg "${YELLOW}>>> 启动安装器（数据目录: ${TK_DATA}）...${NC}"
+# 交互式终端下分配 TTY，安装器内五模块进度条才能原地刷新
+DOCKER_RUN_TTY=()
+if [ -t 1 ]; then
+    DOCKER_RUN_TTY=(-t)
+fi
 # 兼容 installer 镜像内 CRLF 脚本（shebang 会变成 /bin/bash\r 导致 exec 失败）
-docker run --rm \
+docker run --rm "${DOCKER_RUN_TTY[@]}" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "${TK_DATA}:/data" \
     -v /proc/meminfo:/host/proc/meminfo:ro \
