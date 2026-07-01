@@ -1,5 +1,5 @@
-# TK 部署进度条（Installer + MySQL / Redis / tk-shield / Backend / Frontend）
-# 宿主机 install.sh 与 installer 内 deploy-internal.sh 共用；非 TTY 时退化为逐行文本。
+# TK 部署进度条（参考 FA fa-customer-install-ui：主屏固定行数重绘，结束后面板擦除再输出摘要）
+# Installer + MySQL / Redis / tk-shield / Backend / Frontend
 
 PROGRESS_MODULE_IDS=(installer mysql redis tk-shield backend frontend)
 PROGRESS_MODULE_LABELS=("Installer" "MySQL" "Redis" "tk-shield" "Backend" "Frontend")
@@ -7,10 +7,11 @@ PROGRESS_MODULE_STATUS=()
 PROGRESS_MODULE_MSG=()
 PROGRESS_MODULE_PCT=()
 _PROGRESS_ACTIVE=0
-_PROGRESS_ALT_SCREEN=0
-_PROGRESS_TTY="/dev/tty"
+_PROGRESS_SUSPENDED=0
+_PROGRESS_BANNER_SHOWN=0
+_PROGRESS_PANEL_LINES=6
+_PROGRESS_PANEL_READY=0
 
-# install.sh 单独 source 时提供默认日志函数
 if ! declare -f deploy_log >/dev/null 2>&1; then
     deploy_log() {
         local log="${DEPLOY_LOG:-${INSTALL_LOG:-}}"
@@ -26,39 +27,20 @@ if ! declare -f deploy_user >/dev/null 2>&1; then
     deploy_user() { echo -e "$@"; }
 fi
 
-progress_tty_printf() {
-    if [ -w "$_PROGRESS_TTY" ] 2>/dev/null; then
-        printf "$@" >"$_PROGRESS_TTY"
-    else
-        printf "$@"
-    fi
-}
-
 progress_enabled() {
-    [ "${DEPLOY_PROGRESS:-1}" = "1" ] && [ "${DEPLOY_VERBOSE:-0}" != "1" ] \
-        && { [ -t 1 ] || [ -w "$_PROGRESS_TTY" ] 2>/dev/null; }
+    [ "${DEPLOY_PROGRESS:-1}" = "1" ] && [ "${DEPLOY_VERBOSE:-0}" != "1" ] && [ -t 1 ]
 }
 
 progress_ui_quiet() {
-    progress_enabled && [ "${_PROGRESS_ACTIVE:-0}" = "1" ]
+    progress_enabled && [ "${_PROGRESS_ACTIVE:-0}" = "1" ] && [ "${_PROGRESS_SUSPENDED:-0}" != "1" ]
 }
 
 progress_log() {
     deploy_log "$@"
 }
 
-progress_screen_enter() {
-    progress_enabled || return 0
-    [ "$_PROGRESS_ALT_SCREEN" = "1" ] && return 0
-    progress_tty_printf '\033[?1049h\033[2J\033[H'
-    _PROGRESS_ALT_SCREEN=1
-}
-
-progress_screen_leave() {
-    progress_enabled || return 0
-    [ "$_PROGRESS_ALT_SCREEN" = "1" ] || return 0
-    progress_tty_printf '\033[?1049l'
-    _PROGRESS_ALT_SCREEN=0
+progress_out() {
+    printf "$@"
 }
 
 progress_reset_modules() {
@@ -70,13 +52,55 @@ progress_reset_modules() {
     done
 }
 
+progress_show_banner() {
+    progress_enabled || return 0
+    [ "${_PROGRESS_BANNER_SHOWN:-0}" = "1" ] && return 0
+    _PROGRESS_BANNER_SHOWN=1
+    progress_out '\n'
+    progress_out '  \033[0;36m╭────────────────────────────────────────────────╮\033[0m\n'
+    progress_out '  \033[0;36m│\033[0m        \033[1mTK · 一键部署\033[0m                      \033[0;36m│\033[0m\n'
+    progress_out '  \033[0;36m╰────────────────────────────────────────────────╯\033[0m\n'
+    progress_out '\n'
+    progress_out '  \033[2m部署进行中，请勿关闭终端\033[0m\n'
+    progress_out '\n'
+}
+
+progress_panel_reserve() {
+    progress_enabled || return 0
+    [ "${_PROGRESS_PANEL_READY:-0}" = "1" ] && return 0
+    progress_out '\n\n\n\n\n\n'
+    _PROGRESS_PANEL_READY=1
+}
+
+progress_erase_panel() {
+    progress_enabled || return 0
+    [ "${_PROGRESS_PANEL_READY:-0}" = "1" ] || return 0
+    local i
+    progress_out '\033[%dA' "$_PROGRESS_PANEL_LINES"
+    for i in $(seq 1 "$_PROGRESS_PANEL_LINES"); do
+        progress_out '\033[2K\r'
+        [ "$i" -lt "$_PROGRESS_PANEL_LINES" ] && progress_out '\n'
+    done
+    _PROGRESS_PANEL_READY=0
+}
+
+progress_suspend() {
+    progress_enabled || return 0
+    progress_erase_panel
+    _PROGRESS_ACTIVE=0
+    _PROGRESS_SUSPENDED=1
+    progress_out '\n'
+}
+
 progress_init() {
     if [ "${_PROGRESS_ACTIVE:-0}" = "1" ]; then
         return 0
     fi
+    _PROGRESS_SUSPENDED=0
     progress_reset_modules
     if progress_enabled; then
-        progress_screen_enter
+        progress_show_banner
+        progress_panel_reserve
         progress_render
         _PROGRESS_ACTIVE=1
     else
@@ -84,15 +108,16 @@ progress_init() {
     fi
 }
 
-# install.sh 拉完 installer 后进入容器，沿用同一块备用屏
 progress_handoff_init() {
     if [ "${_PROGRESS_ACTIVE:-0}" = "1" ]; then
         return 0
     fi
+    _PROGRESS_SUSPENDED=0
+    _PROGRESS_BANNER_SHOWN=1
     progress_reset_modules
     progress_set installer ok "已就绪" 100 1
     if progress_enabled; then
-        _PROGRESS_ALT_SCREEN=1
+        _PROGRESS_PANEL_READY=1
         progress_render
         _PROGRESS_ACTIVE=1
     fi
@@ -141,63 +166,66 @@ progress_set() {
 }
 
 _progress_bar_glyphs() {
-    local pct="$1" width=22
+    local pct="$1" width=20
     local filled=$(( pct * width / 100 ))
     local empty=$(( width - filled ))
-    local i bar="" space=""
-    for ((i = 0; i < filled; i++)); do bar+="#"; done
-    for ((i = 0; i < empty; i++)); do space+="-"; done
-    printf '%s%s' "$bar" "$space"
+    local i bar=""
+    for ((i = 0; i < filled; i++)); do bar+='█'; done
+    for ((i = 0; i < empty; i++)); do bar+='░'; done
+    printf '%s' "$bar"
+}
+
+_progress_state_glyph() {
+    case "$1" in
+        ok) printf '✓' ;;
+        failed) printf '✗' ;;
+        skip) printf '–' ;;
+        running) printf '◐' ;;
+        *) printf '·' ;;
+    esac
 }
 
 _progress_trim_msg() {
     local text="$1"
-    if [ "${#text}" -gt 32 ]; then
-        text="${text:0:32}"
+    if [ "${#text}" -gt 28 ]; then
+        text="${text:0:28}"
     fi
     printf '%s' "$text"
 }
 
 progress_render() {
     progress_enabled || return 0
-    local i status msg pct glyphs label
-    progress_screen_enter
-    progress_tty_printf '\033[H'
-    progress_tty_printf '\033[2K\r  TK 服务模块启动进度\033[K\n'
-    progress_tty_printf '\033[2K\r  ─────────────────────────────────────────\033[K\n'
+    [ "${_PROGRESS_PANEL_READY:-0}" = "1" ] || progress_panel_reserve
+    local i status msg pct glyphs label glyph state_color
+    progress_out '\033[%dA' "$_PROGRESS_PANEL_LINES"
     for i in "${!PROGRESS_MODULE_IDS[@]}"; do
         status="${PROGRESS_MODULE_STATUS[$i]}"
         msg="$(_progress_trim_msg "${PROGRESS_MODULE_MSG[$i]}")"
         pct="${PROGRESS_MODULE_PCT[$i]}"
         label="${PROGRESS_MODULE_LABELS[$i]}"
         glyphs=$(_progress_bar_glyphs "$pct")
+        glyph=$(_progress_state_glyph "$status")
+        state_color='\033[0;90m'
         case "$status" in
-            ok)
-                progress_tty_printf '\033[2K\r  \033[0;32m%-10s [%s] %3s%%  %-32s\033[0m\033[K\n' "$label" "$glyphs" "$pct" "$msg"
-                ;;
-            failed)
-                progress_tty_printf '\033[2K\r  \033[0;31m%-10s [%s] %3s%%  %-32s\033[0m\033[K\n' "$label" "$glyphs" "$pct" "$msg"
-                ;;
-            skip)
-                progress_tty_printf '\033[2K\r  \033[0;90m%-10s [%s] %3s%%  %-32s\033[0m\033[K\n' "$label" "$glyphs" "$pct" "$msg"
-                ;;
-            running)
-                progress_tty_printf '\033[2K\r  \033[0;33m%-10s [%s] %3s%%  %-32s\033[0m\033[K\n' "$label" "$glyphs" "$pct" "$msg"
-                ;;
-            *)
-                progress_tty_printf '\033[2K\r  \033[0;90m%-10s [%s] %3s%%  %-32s\033[0m\033[K\n' "$label" "$glyphs" "$pct" "$msg"
-                ;;
+            ok) state_color='\033[0;32m' ;;
+            failed) state_color='\033[0;31m' ;;
+            skip) state_color='\033[0;90m' ;;
+            running) state_color='\033[0;33m' ;;
         esac
+        progress_out '\033[2K\r'
+        progress_out '  %b%-10s%b %b[%s]%b %3s%%  %s  %b%s%b\n' \
+            '\033[1m' "$label" '\033[0m' \
+            "$state_color" "$glyphs" '\033[0m' \
+            "$pct" "$glyph" \
+            '\033[2m' "$msg" '\033[0m'
     done
-    progress_tty_printf '\033[J'
 }
 
 progress_finish() {
     progress_enabled || return 0
     if [ "$_PROGRESS_ACTIVE" = "1" ]; then
         progress_render
-        progress_screen_leave
-        _PROGRESS_ACTIVE=0
+        progress_suspend
     fi
 }
 
@@ -208,7 +236,10 @@ progress_fail_module() {
 
 progress_abort() {
     local summary="${1:-服务模块启动失败}"
-    progress_finish
+    if [ "${_PROGRESS_ACTIVE:-0}" = "1" ]; then
+        progress_render
+        progress_suspend
+    fi
     deploy_err "${RED}>>> ${summary}${NC}"
     deploy_err "${YELLOW}>>> 详细日志: ${DEPLOY_LOG:-${INSTALL_LOG:-}}${NC}"
     exit 1
@@ -216,7 +247,7 @@ progress_abort() {
 
 progress_pull_with_bar() {
     local id="$1" image="$2" log_file="${3:-${DEPLOY_LOG:-${INSTALL_LOG:-}}}" tries="${4:-3}"
-    local n=1 pulse=20 pull_pid rc=0
+    local n=1 pulse=20 pull_pid
     while [ "$n" -le "$tries" ]; do
         progress_set "$id" running "拉取镜像 (${n}/${tries})" "$pulse" 1
         progress_render
