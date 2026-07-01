@@ -156,7 +156,7 @@ install_msg "${YELLOW}>>> 启动安装器（数据目录: ${TK_DATA}）...${NC}"
 # 交互式终端下分配 TTY，安装器内五模块进度条才能原地刷新
 DOCKER_RUN_TTY=()
 if [ -t 1 ]; then
-    DOCKER_RUN_TTY=(-t)
+    DOCKER_RUN_TTY=(-it)
 fi
 # 兼容 installer 镜像内 CRLF 脚本（shebang 会变成 /bin/bash\r 导致 exec 失败）
 docker run --rm "${DOCKER_RUN_TTY[@]}" \
