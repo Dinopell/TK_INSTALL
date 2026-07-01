@@ -241,7 +241,24 @@ _frontend_ready() {
     if ! _container_running app-deploy-frontend-1; then
         return 1
     fi
+    if [ -n "${ADMIN_ENTRY:-}" ]; then
+        local code
+        code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+            "http://127.0.0.1/${ADMIN_ENTRY}/" 2>/dev/null || echo 000)"
+        case "$code" in
+            200|301|302) return 0 ;;
+        esac
+    fi
     docker exec app-deploy-frontend-1 nginx -t >>"${DEPLOY_LOG:-/dev/null}" 2>&1
+}
+
+_all_services_ready() {
+    local shield_ok=1
+    if [ "${TK_SHIELD_ENABLED:-0}" = "1" ]; then
+        _container_running app-deploy-tk-shield-1 || shield_ok=0
+    fi
+    _mysql_ready && _container_running app-deploy-redis-1 && [ "$shield_ok" -eq 1 ] \
+        && _backend_ready && _frontend_ready
 }
 
 progress_wait_all_services() {
@@ -314,6 +331,20 @@ progress_wait_all_services() {
         fi
         sleep 2
     done
+
+    if _all_services_ready; then
+        [ "$mysql_ok" -eq 0 ] && progress_set mysql ok "健康检查通过" 100
+        [ "$redis_ok" -eq 0 ] && progress_set redis ok "已运行" 100
+        if [ "$shield_skip" -eq 0 ] && [ "$shield_ok" -eq 0 ]; then
+            progress_set tk-shield ok "已运行" 100
+        fi
+        [ "$backend_ok" -eq 0 ] && progress_set backend ok "TK 已启动" 100
+        [ "$frontend_ok" -eq 0 ] && progress_set frontend ok "Nginx 就绪" 100
+        deploy_user "${YELLOW}>>> 进度检测超时，但各模块探针已通过，继续完成 SQL 与 Nginx 配置...${NC}"
+        progress_log "[progress] wait timeout (${max} rounds) but probes ok — continuing deploy"
+        progress_finish
+        return 0
+    fi
 
     [ "$mysql_ok" -eq 1 ] || progress_fail_module mysql "超时未就绪"
     [ "$redis_ok" -eq 1 ] || progress_fail_module redis "超时未就绪"
