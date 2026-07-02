@@ -28,6 +28,12 @@ install_log() {
     echo -e "$@" >>"$INSTALL_LOG" 2>/dev/null || true
 }
 
+# 关键步骤：终端可见 + 写入 deploy.log（详细层日志仍走 install_msg）
+install_user() {
+    echo -e "$@"
+    install_log "$@"
+}
+
 install_msg() {
     if [ "$DEPLOY_VERBOSE" = "1" ]; then
         echo -e "$@"
@@ -40,13 +46,44 @@ install_err() {
     echo -e "$@" >&2
 }
 
+install_require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        install_err "${RED}>>> 请使用 root 执行: sudo bash install.sh${NC}"
+        install_err "${YELLOW}>>> 子台需绑定 80/443、访问 docker.sock，且数据目录固定为 /root/app-deploy${NC}"
+        exit 1
+    fi
+}
+
+install_validate_data_dir() {
+    case "$TK_DATA" in
+        /root/app-deploy)
+            return 0
+            ;;
+        /home/*)
+            install_err "${RED}>>> 不支持将数据目录放在普通用户 home 下: ${TK_DATA}${NC}"
+            install_err "${YELLOW}>>> 请改用默认路径:${NC}"
+            install_err "${YELLOW}>>>   sudo TK_DATA=/root/app-deploy bash install.sh${NC}"
+            install_err "${YELLOW}>>> 若已有旧目录，可先迁移:${NC}"
+            install_err "${YELLOW}>>>   sudo mv ${TK_DATA} /root/app-deploy${NC}"
+            exit 1
+            ;;
+        *)
+            install_user "${YELLOW}>>> 使用自定义数据目录: ${TK_DATA}（推荐 /root/app-deploy）${NC}"
+            ;;
+    esac
+}
+
+install_require_root
+install_validate_data_dir
+
 wait_for_docker() {
     local i
     for i in $(seq 1 15); do
         if docker info >/dev/null 2>&1; then
+            install_user "${GREEN}>>> Docker 守护进程就绪${NC}"
             return 0
         fi
-        install_msg "${YELLOW}>>> 等待 Docker 守护进程就绪 (${i}/15)...${NC}"
+        install_user "${YELLOW}>>> 等待 Docker 守护进程就绪 (${i}/15)...${NC}"
         sleep 2
     done
     install_err "${RED}>>> Docker 守护进程未就绪，请稍后重试${NC}"
@@ -56,26 +93,35 @@ wait_for_docker() {
 docker_pull_retry() {
     local image="$1" tries="${2:-3}"
     local n=1
+    install_user "${BLUE}>>> 拉取镜像: ${image}${NC}"
     while [ "$n" -le "$tries" ]; do
         if [ "$DEPLOY_VERBOSE" = "1" ]; then
             if docker pull "$image"; then
+                install_user "${GREEN}>>> 镜像已就绪: ${image}${NC}"
                 return 0
             fi
         elif docker pull "$image" >>"$INSTALL_LOG" 2>&1; then
+            install_user "${GREEN}>>> 镜像已就绪: ${image}${NC}"
             return 0
         fi
-        install_msg "${YELLOW}>>> 拉取失败 (${n}/${tries})，5 秒后重试: ${image}${NC}"
+        install_user "${YELLOW}>>> 拉取失败 (${n}/${tries})，5 秒后重试: ${image}${NC}"
         sleep 5
         n=$((n + 1))
     done
     return 1
 }
 
-if ! command -v docker &>/dev/null; then
-    install_msg "${BLUE}>>> 正在安装 Docker...${NC}"
+install_user "${YELLOW}>>> TK 安装开始（数据目录: ${TK_DATA}，日志: ${INSTALL_LOG}）${NC}"
+
+if command -v docker &>/dev/null; then
+    _install_docker_ver="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
+    install_user "${GREEN}>>> 检测到 Docker 已安装 (Server ${_install_docker_ver})${NC}"
+else
+    install_user "${BLUE}>>> 未检测到 Docker，正在自动安装...${NC}"
     curl -fsSL https://get.docker.com | sh >>"$INSTALL_LOG" 2>&1
     systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
     systemctl enable docker 2>/dev/null || true
+    install_user "${GREEN}>>> Docker 安装完成${NC}"
 fi
 
 wait_for_docker
@@ -110,7 +156,7 @@ TK_SHIELD_ENABLED=1
 TK_UA_BLOCK_ENABLED=1
 EOF
         chmod 600 "${TK_DATA}/deploy.env"
-        install_msg "${GREEN}>>> 已自动创建 ${TK_DATA}/deploy.env，ADMIN_API_HOSTS=${_auto_ip}${NC}"
+        install_user "${GREEN}>>> 已自动创建 deploy.env，ADMIN_API_HOSTS=${_auto_ip}${NC}"
     fi
 fi
 
@@ -136,10 +182,10 @@ if [ -f "${TK_DATA}/deploy.env" ]; then
             fi
             ADMIN_API_HOSTS="$_auto_ip"
             export ADMIN_API_HOSTS
-            install_msg "${GREEN}>>> 已自动设置 ADMIN_API_HOSTS=${_auto_ip}${NC}"
+            install_user "${GREEN}>>> 已自动设置 ADMIN_API_HOSTS=${_auto_ip}${NC}"
         fi
     fi
-    install_msg "${GREEN}>>> 已加载 ${TK_DATA}/deploy.env${NC}"
+    install_user "${GREEN}>>> 已加载 ${TK_DATA}/deploy.env${NC}"
 fi
 
 HOST_TOTAL_MEM_MB="$(awk '/MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 2048)"
@@ -147,14 +193,16 @@ if [ "$HOST_TOTAL_MEM_MB" -lt 512 ] 2>/dev/null; then
     HOST_TOTAL_MEM_MB=2048
 fi
 
-install_msg "${YELLOW}>>> 拉取安装器镜像 ${INSTALLER}...${NC}"
+install_user "${GREEN}>>> 宿主机内存 ${HOST_TOTAL_MEM_MB}MB${NC}"
+
+install_user "${YELLOW}>>> 拉取安装器镜像 ${INSTALLER}...${NC}"
 if ! docker_pull_retry "$INSTALLER"; then
     install_err "${RED}>>> 拉取安装器镜像失败: ${INSTALLER}${NC}"
     install_err "${YELLOW}>>> 详见 ${INSTALL_LOG}${NC}"
     exit 1
 fi
 
-install_msg "${YELLOW}>>> 启动安装器（数据目录: ${TK_DATA}）...${NC}"
+install_user "${YELLOW}>>> 启动安装器（数据目录: ${TK_DATA}）...${NC}"
 # 交互式终端下分配 TTY，安装器内五模块进度条才能原地刷新
 DOCKER_RUN_TTY=()
 if [ -t 1 ]; then

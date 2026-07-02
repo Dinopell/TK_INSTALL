@@ -108,6 +108,18 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+case "$TK_DATA" in
+    /root/app-deploy) ;;
+    /home/*)
+        echo ">>> 错误: 不支持将数据目录放在 ${TK_DATA}" >&2
+        echo ">>> 请使用: sudo bash bootstrap.sh ... --data-dir /root/app-deploy" >&2
+        exit 1
+        ;;
+    *)
+        echo ">>> 使用自定义数据目录: ${TK_DATA}（推荐 /root/app-deploy）" >&2
+        ;;
+esac
+
 ensure_pkg_lib() {
     if [ -n "$LIB_SH" ]; then
         return 0

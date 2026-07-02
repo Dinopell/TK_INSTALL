@@ -207,30 +207,103 @@ progress_pull_quiet() {
     return 1
 }
 
+_container_running() {
+    local name="$1" status restarting
+    status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo missing)"
+    [ "$status" = "running" ] || return 1
+    restarting="$(docker inspect -f '{{.State.Restarting}}' "$name" 2>/dev/null || echo true)"
+    [ "$restarting" = "false" ] || return 1
+    return 0
+}
+
+_container_restart_count() {
+    docker inspect -f '{{.RestartCount}}' "$1" 2>/dev/null || echo 0
+}
+
+_container_status() {
+    docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null || echo missing
+}
+
+_progress_report_restart_loop() {
+    local name="$1" module="$2"
+    local count status
+    count="$(_container_restart_count "$name")"
+    status="$(_container_status "$name")"
+    deploy_err "${RED}>>> 容器 ${name} 反复崩溃重启 (status=${status}, RestartCount=${count})${NC}"
+    deploy_err "${YELLOW}>>> 请检查: docker logs --tail 80 ${name}${NC}"
+    deploy_err "${YELLOW}>>> 最近日志:${NC}"
+    docker logs --tail 40 "$name" 2>&1 | while IFS= read -r line; do
+        deploy_err "    $line"
+    done
+    progress_fail_module "$module" "容器崩溃重启"
+    progress_abort "容器 ${name} 无法稳定运行，部署已中止"
+}
+
+progress_check_restart_loops() {
+    local name module threshold
+    while [ "$#" -ge 3 ]; do
+        name="$1"
+        module="$2"
+        threshold="$3"
+        shift 3
+        if ! docker inspect "$name" >/dev/null 2>&1; then
+            continue
+        fi
+        local count status
+        count="$(_container_restart_count "$name")"
+        status="$(_container_status "$name")"
+        if [ "${count:-0}" -lt "$threshold" ] 2>/dev/null; then
+            continue
+        fi
+        case "$status" in
+            restarting|exited|dead)
+                _progress_report_restart_loop "$name" "$module"
+                ;;
+            running)
+                if [ "${count:-0}" -ge $((threshold + 2)) ] 2>/dev/null; then
+                    _progress_report_restart_loop "$name" "$module"
+                fi
+                ;;
+        esac
+    done
+}
+
 _mysql_ready() {
+    _container_running app-deploy-mysql-1 || return 1
     local hs
     hs="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' app-deploy-mysql-1 2>/dev/null || echo none)"
     if [ "$hs" = "healthy" ]; then
         return 0
     fi
     docker exec app-deploy-mysql-1 \
-        mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_PWD}" --silent >/dev/null 2>&1
+        mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_PWD}" --silent >/dev/null 2>/dev/null
 }
 
-_container_running() {
-    [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]
+_container_probe_ok() {
+    local name="$1"
+    case "$(_container_status "$name")" in
+        running) _container_running "$name" ;;
+        *) return 1 ;;
+    esac
 }
 
 _backend_ready() {
-    if ! _container_running app-deploy-backend-1; then
+    local status
+    status="$(_container_status app-deploy-backend-1)"
+    case "$status" in
+        restarting|exited|dead|missing) return 1 ;;
+    esac
+    if ! _container_probe_ok app-deploy-backend-1; then
         return 1
     fi
-    if docker logs app-deploy-backend-1 2>&1 | tail -300 | grep -qE 'TK启动成功|若依启动成功'; then
+    # restarting 时 docker logs / docker exec 会向终端刷 daemon 错误，须吞掉 stderr
+    if docker logs app-deploy-backend-1 2>/dev/null | tail -300 | grep -qE 'TK启动成功|若依启动成功'; then
         return 0
     fi
     local code
     code="$(docker exec app-deploy-backend-1 sh -c \
-        'curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8080/ 2>/dev/null || echo 000')" || code="000"
+        'curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8080/ 2>/dev/null || echo 000' \
+        2>/dev/null)" || code="000"
     case "$code" in
         200|302|401|403|404) return 0 ;;
     esac
@@ -238,9 +311,15 @@ _backend_ready() {
 }
 
 _frontend_ready() {
-    if ! _container_running app-deploy-frontend-1; then
+    local status
+    status="$(_container_status app-deploy-frontend-1)"
+    case "$status" in
+        restarting|exited|dead|missing) return 1 ;;
+    esac
+    if ! _container_probe_ok app-deploy-frontend-1; then
         return 1
     fi
+    # 优先 HTTP 探针：静态页能打开即视为就绪（nginx -t 可能因动态域名片段误报失败）
     if [ -n "${ADMIN_ENTRY:-}" ]; then
         local code
         code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
@@ -249,7 +328,7 @@ _frontend_ready() {
             200|301|302) return 0 ;;
         esac
     fi
-    docker exec app-deploy-frontend-1 nginx -t >>"${DEPLOY_LOG:-/dev/null}" 2>&1
+    docker exec app-deploy-frontend-1 nginx -t >>"${DEPLOY_LOG:-/dev/null}" 2>/dev/null
 }
 
 _all_services_ready() {
@@ -280,9 +359,29 @@ progress_wait_all_services() {
     progress_set backend running "等待依赖" 10
     progress_set frontend running "等待 Backend" 5
 
+    # force-recreate 后短暂 restarting，避免 docker exec 向 TTY 刷 daemon 错误
+    sleep 3
+
     for i in $(seq 1 "$max"); do
         pulse=$(( 25 + (i % 6) * 10 ))
         [ "$pulse" -gt 85 ] && pulse=85
+
+        if [ "$i" -ge 2 ]; then
+            if [ "$shield_skip" -eq 0 ]; then
+                progress_check_restart_loops \
+                    app-deploy-mysql-1 mysql 6 \
+                    app-deploy-redis-1 redis 6 \
+                    app-deploy-tk-shield-1 tk-shield 6 \
+                    app-deploy-backend-1 backend 3 \
+                    app-deploy-frontend-1 frontend 5
+            else
+                progress_check_restart_loops \
+                    app-deploy-mysql-1 mysql 6 \
+                    app-deploy-redis-1 redis 6 \
+                    app-deploy-backend-1 backend 3 \
+                    app-deploy-frontend-1 frontend 5
+            fi
+        fi
 
         if [ "$mysql_ok" -eq 0 ] && _mysql_ready; then
             mysql_ok=1
@@ -307,21 +406,44 @@ progress_wait_all_services() {
         fi
 
         if [ "$backend_ok" -eq 0 ] && [ "$mysql_ok" -eq 1 ]; then
-            if _backend_ready; then
-                backend_ok=1
-                progress_set backend ok "TK 已启动" 100
-            else
-                progress_set backend running "JVM 启动中 (${i}/${max})" "$pulse" 1
-            fi
+            case "$(_container_status app-deploy-backend-1)" in
+                restarting)
+                    progress_set backend running "崩溃重启中 (${i}/${max})" "$pulse" 1
+                    ;;
+                exited|dead)
+                    progress_set backend running "已退出，等待重启 (${i}/${max})" "$pulse" 1
+                    ;;
+                *)
+                    if _backend_ready; then
+                        backend_ok=1
+                        progress_set backend ok "TK 已启动" 100
+                    else
+                        progress_set backend running "JVM 启动中 (${i}/${max})" "$pulse" 1
+                    fi
+                    ;;
+            esac
         fi
 
         if [ "$frontend_ok" -eq 0 ] && [ "$backend_ok" -eq 1 ]; then
-            if _frontend_ready; then
-                frontend_ok=1
-                progress_set frontend ok "Nginx 就绪" 100
-            else
-                progress_set frontend running "Nginx 配置中 (${i}/${max})" "$pulse" 1
-            fi
+            case "$(_container_status app-deploy-frontend-1)" in
+                restarting)
+                    progress_set frontend running "崩溃重启中 (${i}/${max})" "$pulse" 1
+                    ;;
+                *)
+                    if _frontend_ready; then
+                        frontend_ok=1
+                        progress_set frontend ok "Nginx 就绪" 100
+                    else
+                        progress_set frontend running "Nginx 配置中 (${i}/${max})" "$pulse" 1
+                    fi
+                    ;;
+            esac
+        elif [ "$frontend_ok" -eq 0 ] && [ "$backend_ok" -eq 0 ] && [ "$mysql_ok" -eq 1 ]; then
+            case "$(_container_status app-deploy-frontend-1)" in
+                restarting|exited|dead)
+                    progress_set frontend running "等待 Backend（Frontend ${i}/${max}）" "$pulse" 1
+                    ;;
+            esac
         fi
 
         if [ "$mysql_ok" -eq 1 ] && [ "$redis_ok" -eq 1 ] && [ "$shield_ok" -eq 1 ] \
@@ -351,7 +473,17 @@ progress_wait_all_services() {
     if [ "$shield_skip" -eq 0 ] && [ "$shield_ok" -eq 0 ]; then
         progress_fail_module tk-shield "超时未就绪"
     fi
-    [ "$backend_ok" -eq 1 ] || progress_fail_module backend "超时未就绪"
-    [ "$frontend_ok" -eq 1 ] || progress_fail_module frontend "超时未就绪"
+    if [ "$backend_ok" -eq 0 ]; then
+        progress_fail_module backend "超时未就绪"
+        deploy_err "${YELLOW}>>> Backend 状态: $(_container_status app-deploy-backend-1), RestartCount=$(_container_restart_count app-deploy-backend-1)${NC}"
+        deploy_err "${YELLOW}>>> Backend 最近日志:${NC}"
+        docker logs --tail 25 app-deploy-backend-1 2>/dev/null | while IFS= read -r line; do deploy_err "    $line"; done
+    fi
+    if [ "$frontend_ok" -eq 0 ]; then
+        progress_fail_module frontend "超时未就绪"
+        deploy_err "${YELLOW}>>> Frontend 状态: $(_container_status app-deploy-frontend-1), RestartCount=$(_container_restart_count app-deploy-frontend-1)${NC}"
+        deploy_err "${YELLOW}>>> Frontend 最近日志:${NC}"
+        docker logs --tail 25 app-deploy-frontend-1 2>/dev/null | while IFS= read -r line; do deploy_err "    $line"; done
+    fi
     progress_abort "服务模块启动超时（${max} 轮）"
 }
