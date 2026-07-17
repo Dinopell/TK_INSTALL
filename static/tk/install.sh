@@ -2,6 +2,10 @@
 # TK用户安装入口（部署逻辑在 installer 镜像内）
 # 用户获取: GitHub Dinopell/TK_INSTALL → static/tk/install.sh
 # 开发维护: 本文件；发版执行 bash ops/sync-to-tk-install.sh
+#
+# ⚠ 供应链安全：curl | bash 无法在安装前校验脚本完整性，存在中间人篡改风险。
+#   推荐：下载 install.sh 后手动校验 SHA256，或设置 TK_INSTALL_SHA256 后由 bootstrap 校验。
+#   示例：export TK_INSTALL_SHA256=<sha256sum install.sh>
 # 默认值与 springboot-app.jar 内 application.yml → ruoyi.substation 对齐：
 #   TK_DATA        ↔ deployDataDir
 #   IMAGE_REGISTRY ↔ imageRegistry
@@ -54,6 +58,14 @@ install_require_root() {
     fi
 }
 
+install_warn_pipe_execution() {
+    if [ -t 0 ]; then
+        return 0
+    fi
+    install_user "${YELLOW}>>> ⚠ 警告：检测到管道安装（curl | bash）。脚本未经本地校验即执行，存在供应链篡改风险。${NC}"
+    install_user "${YELLOW}>>> 建议：先下载 install.sh，sha256sum 校验后再 bash；或设置 TK_INSTALL_SHA256 由 bootstrap 校验。${NC}"
+}
+
 install_validate_data_dir() {
     case "$TK_DATA" in
         /root/app-deploy)
@@ -74,6 +86,7 @@ install_validate_data_dir() {
 }
 
 install_require_root
+install_warn_pipe_execution
 install_validate_data_dir
 
 wait_for_docker() {

@@ -2,6 +2,9 @@
 # =============================================================================
 # TK一键安全部署（多服务器：每台只执行一条命令）
 #
+# ⚠ 供应链安全：curl | bash 存在脚本篡改风险。推荐下载后 sha256sum 校验，或：
+#   export TK_INSTALL_SHA256=<install.sh 的 sha256>
+#
 # 推荐（Token 不进命令行 / bash history）：
 #
 #   curl -fsSL .../bootstrap.sh | sudo bash -s -- --from-master
@@ -119,6 +122,11 @@ case "$TK_DATA" in
         echo ">>> 使用自定义数据目录: ${TK_DATA}（推荐 /root/app-deploy）" >&2
         ;;
 esac
+
+if [ ! -t 0 ]; then
+    echo ">>> ⚠ 警告：检测到管道执行（curl | bash）。存在供应链篡改风险；建议下载脚本后 sha256sum 校验。" >&2
+    echo ">>> 下载 install.sh 时可设置 TK_INSTALL_SHA256 自动校验。" >&2
+fi
 
 ensure_pkg_lib() {
     if [ -n "$LIB_SH" ]; then
@@ -304,6 +312,16 @@ else
     echo ">>> 下载 install.sh ..."
     curl -fsSL "${INSTALL_BASE_URL%/}/install.sh" -o "$INSTALL_SH"
     chmod +x "$INSTALL_SH"
+    if [ -n "${TK_INSTALL_SHA256:-}" ]; then
+        _actual="$(sha256sum "$INSTALL_SH" | awk '{print $1}')"
+        if [ "$_actual" != "$TK_INSTALL_SHA256" ]; then
+            echo ">>> install.sh SHA256 校验失败（期望 ${TK_INSTALL_SHA256}，实际 ${_actual}）" >&2
+            exit 1
+        fi
+        echo ">>> install.sh SHA256 校验通过"
+    else
+        echo ">>> ⚠ 未设置 TK_INSTALL_SHA256，跳过 install.sh 完整性校验" >&2
+    fi
     ensure_pkg_lib
 fi
 
